@@ -583,6 +583,7 @@ function stopVolumeMeter() {
 // ===== 识别器 =====
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
+let fatalError = false;
 
 function initRecognition() {
   if (!SpeechRecognition) { alert('请用 Chrome（Android）或 Safari（iOS）'); return; }
@@ -592,6 +593,7 @@ function initRecognition() {
   recognition.interimResults = true;
 
   recognition.onstart = () => {
+    fatalError = false;
     micBtn.classList.add('recording');
     setStatus(true);
     originalEl.classList.remove('placeholder');
@@ -600,13 +602,25 @@ function initRecognition() {
   recognition.onend = () => {
     setStatus(false);
     stopVolumeMeter();
-    if (!micBtn.dataset.stop) {
+    if (!micBtn.dataset.stop && !fatalError) {
       try { recognition.start(); } catch(e){}
     } else {
       micBtn.classList.remove('recording');
     }
   };
-  recognition.onerror = (e) => { if (e.error === 'not-allowed') alert('请允许麦克风权限'); };
+  recognition.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      fatalError = true;
+      micBtn.classList.remove('recording');
+      setStatus(false);
+      alert('请允许麦克风权限');
+    } else if (e.error === 'audio-capture') {
+      fatalError = true;
+      micBtn.classList.remove('recording');
+      setStatus(false);
+      alert('没有检测到麦克风');
+    }
+  };
 
   recognition.onresult = (event) => {
     let interim = '', finals = '';
@@ -637,6 +651,7 @@ function initRecognition() {
 // ===== 按钮交互：短按=录音，长按=小熊模式 =====
 let pressTimer = null;
 let longPress = false;
+let lastTouchAt = 0;
 const LONG_PRESS_MS = 500;
 
 micBtn.addEventListener('touchstart', (e) => {
@@ -649,12 +664,14 @@ micBtn.addEventListener('touchstart', (e) => {
   }, LONG_PRESS_MS);
 });
 micBtn.addEventListener('touchend', (e) => {
+  lastTouchAt = Date.now();
   if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
   if (longPress) { longPress = false; return; }
   handleBtnClick();
   e.preventDefault();
 });
 micBtn.addEventListener('mousedown', () => {
+  if (Date.now() - lastTouchAt < 800) return;  // 忽略触摸后浏览器补发的鼠标事件
   longPress = false;
   pressTimer = setTimeout(() => {
     longPress = true;
@@ -664,6 +681,7 @@ micBtn.addEventListener('mousedown', () => {
   }, LONG_PRESS_MS);
 });
 micBtn.addEventListener('mouseup', () => {
+  if (Date.now() - lastTouchAt < 800) return;
   if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
   if (longPress) { longPress = false; return; }
   handleBtnClick();
@@ -671,7 +689,7 @@ micBtn.addEventListener('mouseup', () => {
 micBtn.addEventListener('mouseleave', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
 
 function handleBtnClick() {
-  if (!recognition) return;
+  if (!recognition) { alert('当前浏览器不支持语音识别，请用 iOS Safari 或 Android Chrome 打开'); return; }
   if (micBtn.classList.contains('recording')) {
     micBtn.dataset.stop = '1';
     recognition.stop();
@@ -692,7 +710,13 @@ function handleBtnClick() {
     }, 600);
   } else {
     finalBuffer = '';
-    try { recognition.start(); } catch(e){}
+    try {
+      recognition.start();
+    } catch(e) {
+      // 已在运行等状态错误：直接保持录音态
+      micBtn.classList.add('recording');
+      setStatus(true);
+    }
   }
 }
 
