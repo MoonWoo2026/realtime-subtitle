@@ -1,0 +1,8 @@
+render:
+  - type: web
+    name: realtime-subtitle
+    env: python
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT
+    autoDeploy: true
+    plan: free

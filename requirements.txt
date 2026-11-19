@@ -1,0 +1,12 @@
+# Audio capture
+sounddevice>=0.4.6
+numpy>=1.22
+
+# Speech Recognition (Google Speech API, free tier)
+SpeechRecognition>=3.10
+
+# Translation (Google Translate via deep-translator)
+deep-translator>=1.11.0
+
+# GUI
+PyQt5>=5.15

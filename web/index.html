@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<title>实时字幕翻译</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:#1a1a2e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;overflow:hidden}
+.container{display:flex;flex-direction:column;height:100%;max-width:800px;margin:0 auto;padding:12px 16px}
+
+/* 顶部栏 */
+.header{display:flex;align-items:center;gap:10px;padding:8px 0 14px}
+.title{font-size:18px;font-weight:600;flex:1;opacity:.9}
+.status-dot{width:10px;height:10px;border-radius:50%;background:#555}
+.status-dot.on{background:#22c55e;box-shadow:0 0 8px #22c55e}
+
+/* 语言选择 */
+.lang-row{display:flex;gap:8px;padding-bottom:12px;flex-wrap:wrap}
+.lang-btn{flex:1 1 calc(33.33% - 6px);padding:10px 6px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:#fff;font-size:14px;cursor:pointer;transition:all .2s}
+.lang-btn.active{background:linear-gradient(135deg,#6366f1,#8b5cf6);border-color:transparent;font-weight:600}
+.lang-btn:active{transform:scale(.97)}
+
+/* 字幕区 */
+.subtitle-area{flex:1;display:flex;flex-direction:column;gap:10px;justify-content:flex-end;padding-bottom:8px}
+
+/* 历史字幕 */
+.history{display:flex;flex-direction:column;gap:2px}
+.history-item{text-align:center;color:rgba(255,255,255,.35);font-size:13px;line-height:1.5;max-height:48px;overflow:hidden}
+
+/* 当前原文 */
+.original{text-align:center;color:#fff;font-size:20px;line-height:1.45;padding:12px 16px;background:rgba(255,255,255,.05);border-radius:14px;min-height:56px;word-break:break-all}
+.original.placeholder{color:rgba(255,255,255,.3);font-size:15px;font-style:italic}
+
+/* 译文 */
+.translated{text-align:center;color:#7dd3fc;font-size:22px;font-weight:700;line-height:1.4;padding:14px 16px;background:rgba(125,211,252,.08);border:1px solid rgba(125,211,252,.2);border-radius:14px;min-height:60px;word-break:break-all}
+.translated.empty{color:rgba(125,211,252,.3);font-weight:400;font-size:15px;font-style:italic}
+
+/* 控制按钮 */
+.controls{padding:12px 0 20px;display:flex;justify-content:center}
+.mic-btn{width:78px;height:78px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);box-shadow:0 6px 24px rgba(99,102,241,.5);display:flex;align-items:center;justify-content:center;transition:all .25s;color:#fff}
+.mic-btn:active{transform:scale(.92)}
+.mic-btn svg{width:34px;height:34px}
+.mic-btn.recording{background:linear-gradient(135deg,#ef4444,#f97316);box-shadow:0 6px 24px rgba(239,68,68,.55);animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 6px 24px rgba(239,68,68,.55)}50%{transform:scale(1.06);box-shadow:0 10px 32px rgba(239,68,68,.8)}}
+.hint{text-align:center;font-size:12px;color:rgba(255,255,255,.35);margin-top:10px}
+
+/* 翻译中指示 */
+.translating::after{content:"...";animation:dots 1s infinite}
+@keyframes dots{0%{content:"."}33%{content:".."}66%{content:"..."}}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">实时字幕翻译</div>
+    <div class="status-dot" id="statusDot"></div>
+  </div>
+
+  <div class="lang-row" id="langRow">
+    <button class="lang-btn active" data-lang="lebanon">黎巴嫩</button>
+    <button class="lang-btn" data-lang="philippines">菲律宾</button>
+    <button class="lang-btn" data-lang="bangladesh">孟加拉</button>
+    <button class="lang-btn" data-lang="korea">韩国</button>
+    <button class="lang-btn" data-lang="english">英语</button>
+  </div>
+
+  <div class="subtitle-area">
+    <div class="history" id="history"></div>
+    <div class="original placeholder" id="original">点击下方麦克风开始</div>
+    <div class="translated empty" id="translated">中文译文将显示在这里</div>
+  </div>
+
+  <div class="controls">
+    <div>
+      <button class="mic-btn" id="micBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3"/>
+          <path d="M5 10a7 7 0 0 0 14 0"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+        </svg>
+      </button>
+      <div class="hint" id="hint">点按说话，再次点按停止</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== 语言配置 =====
+const LANGS = {
+  lebanon:     { speech: 'ar-LB',  mymemory: 'ar-SA', label: '黎巴嫩语' },
+  philippines: { speech: 'fil-PH', mymemory: 'fil-PH', label: '菲律宾语' },
+  bangladesh:  { speech: 'bn-BD',  mymemory: 'bn-IN',  label: '孟加拉语' },
+  korea:       { speech: 'ko-KR',  mymemory: 'ko-KR',  label: '韩语' },
+  english:     { speech: 'en-US',  mymemory: 'en-GB',  label: '英语' },
+};
+let currentLang = 'lebanon';
+
+// ===== Web Speech API =====
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let isRecording = false;
+let finalText = '';  // 已确认的文本
+
+// ===== UI =====
+const originalEl = document.getElementById('original');
+const translatedEl = document.getElementById('translated');
+const historyEl = document.getElementById('history');
+const micBtn = document.getElementById('micBtn');
+const statusDot = document.getElementById('statusDot');
+const hintEl = document.getElementById('hint');
+
+function setStatus(on) {
+  statusDot.classList.toggle('on', !!on);
+}
+
+// ===== 历史字幕管理 =====
+const history = [];
+function pushHistory(orig, trans) {
+  if (!orig) return;
+  history.push({orig, trans});
+  if (history.length > 3) history.shift();
+  historyEl.innerHTML = history.map(h =>
+    `<div class="history-item">${h.orig} — ${h.trans}</div>`
+  ).join('');
+}
+
+// ===== 翻译（调用后端） =====
+let translateTimer = null;
+let pendingText = '';
+async function translateText(text) {
+  if (!text || !text.trim()) return;
+  translatedEl.classList.remove('empty');
+  translatedEl.classList.add('translating');
+  try {
+    const resp = await fetch('/translate', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({src: currentLang, target: 'zh-CN', text})
+    });
+    const data = await resp.json();
+    translatedEl.textContent = data.translation || '';
+  } catch(e) {
+    translatedEl.textContent = '（翻译失败）';
+  }
+  translatedEl.classList.remove('translating');
+}
+// 节流翻译（避免每次 partial 都调后端）
+function scheduleTranslate(text) {
+  pendingText = text;
+  if (translateTimer) clearTimeout(translateTimer);
+  translateTimer = setTimeout(() => translateText(pendingText), 600);
+}
+
+// ===== 初始化识别器 =====
+function initRecognition() {
+  if (!SpeechRecognition) {
+    hintEl.textContent = '当前浏览器不支持语音识别，请使用 Chrome';
+    micBtn.disabled = true;
+    micBtn.style.opacity = '.4';
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.lang = LANGS[currentLang].speech;
+  recognition.continuous = true;
+  recognition.interimResults = true;  // 允许 partial 结果
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    isRecording = true;
+    micBtn.classList.add('recording');
+    setStatus(true);
+    originalEl.classList.remove('placeholder');
+  };
+  recognition.onend = () => {
+    isRecording = false;
+    micBtn.classList.remove('recording');
+    setStatus(false);
+    // 自动重启（用户按住说话体验）
+    if (finalText && !micBtn.dataset.manualStop) {
+      try { recognition.start(); } catch(e){}
+    }
+  };
+  recognition.onerror = (e) => {
+    console.warn('ASR error:', e.error);
+    if (e.error === 'not-allowed') {
+      hintEl.textContent = '请在浏览器中允许麦克风权限';
+    }
+  };
+  recognition.onresult = (event) => {
+    let interim = '';
+    let finals = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) finals += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    if (finals) {
+      finalText += finals;
+      const full = finalText;
+      originalEl.textContent = full;
+      // final 触发立即翻译
+      translateText(full);
+    } else if (interim) {
+      // partial 只显示原文，节流翻译
+      originalEl.textContent = finalText + interim;
+      scheduleTranslate(finalText + interim);
+    }
+  };
+}
+
+// ===== 交互 =====
+function toggleMic() {
+  if (!recognition) return;
+  if (isRecording) {
+    micBtn.dataset.manualStop = '1';
+    recognition.stop();
+    setTimeout(() => {
+      // 把当前内容推入历史
+      if (finalText) {
+        const curTrans = translatedEl.textContent;
+        pushHistory(finalText, curTrans);
+        finalText = '';
+        originalEl.textContent = '';
+        translatedEl.textContent = '';
+        translatedEl.classList.add('empty');
+        originalEl.classList.add('placeholder');
+      }
+      micBtn.dataset.manualStop = '';
+    }, 300);
+  } else {
+    finalText = '';
+    try { recognition.start(); } catch(e){}
+  }
+}
+
+micBtn.addEventListener('click', toggleMic);
+
+// 语言切换
+document.querySelectorAll('.lang-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentLang = btn.dataset.lang;
+    if (recognition) {
+      recognition.lang = LANGS[currentLang].speech;
+    }
+    finalText = '';
+    originalEl.textContent = '点击下方麦克风开始';
+    originalEl.classList.add('placeholder');
+    translatedEl.textContent = '中文译文将显示在这里';
+    translatedEl.classList.add('empty');
+    history.length = 0;
+    historyEl.innerHTML = '';
+  });
+});
+
+// ===== 启动 =====
+initRecognition();
+// 请求一次权限（iOS 需要用户手势后才能请求，这里仅尝试）
+if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  navigator.mediaDevices.getUserMedia({audio:true}).then(()=>{
+    setStatus(true);
+    setTimeout(()=>setStatus(false), 800);
+  }).catch(()=>{});
+}
+</script>
+</body>
+</html>
