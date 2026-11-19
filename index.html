@@ -33,19 +33,21 @@ body{padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom)}
 .subtitle-area{flex:1;display:flex;flex-direction:column;gap:6px;padding:4px 0;min-height:0}
 
 /* 译文：主力，占最大空间 */
-.translated{flex:1;text-align:left;color:#1a1a2e;font-size:22px;font-weight:600;line-height:1.55;padding:14px 18px;background:#fff;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.05);overflow-y:auto;word-break:break-all}
+.translated{flex:1;min-height:0;text-align:left;color:#1a1a2e;font-size:22px;font-weight:600;line-height:1.55;padding:14px 18px;background:#fff;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.05);overflow-y:auto;word-break:break-all}
 .translated.empty{color:#bbb;font-weight:400;font-size:14.5px;font-style:italic;display:flex;align-items:center;justify-content:center}
 .translated.error{color:#e76f51;font-weight:500}
 .translated::-webkit-scrollbar{width:3px}
 .translated::-webkit-scrollbar-thumb{background:rgba(0,0,0,.1);border-radius:2px}
 
 /* 原文：低调折叠 */
-.original-wrap{position:relative;max-height:46px;overflow:hidden;border-radius:10px;transition:max-height .3s ease}
-.original-wrap.expanded{max-height:260px}
-.original{color:#999;font-size:13.5px;line-height:1.5;padding:10px 14px;background:rgba(0,0,0,.02);word-break:break-all}
-.original.placeholder{color:#ccc;font-size:12px;font-style:italic;display:flex;align-items:center;justify-content:center;height:46px;padding:0}
-.original-wrap .collapse-hint{position:absolute;bottom:0;left:0;right:0;height:22px;background:linear-gradient(transparent, rgba(250,243,234,.95));display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px;font-size:10px;color:#aaa;cursor:pointer}
-.original-wrap.expanded .collapse-hint{background:transparent}
+.original-wrap{position:relative;max-height:46px;overflow:hidden;border-radius:10px;transition:max-height .3s ease;display:flex;flex-direction:column}
+.original-wrap.expanded{max-height:42vh}
+.original{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;color:#999;font-size:13.5px;line-height:1.5;padding:10px 14px;background:rgba(0,0,0,.02);word-break:break-all}
+.original::-webkit-scrollbar{width:3px}
+.original::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:2px}
+.original.placeholder{color:#ccc;font-size:12px;font-style:italic;display:flex;align-items:center;justify-content:center;height:46px;padding:0;flex:none;overflow:hidden}
+.original-wrap .collapse-hint{position:absolute;bottom:0;left:0;right:0;height:22px;background:linear-gradient(transparent, rgba(250,243,234,.95));display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px;font-size:10px;color:#aaa;cursor:pointer;z-index:2}
+.original-wrap.expanded .collapse-hint{position:static;height:20px;background:transparent;flex-shrink:0;align-items:center;padding:0}
 .original-wrap.expanded .collapse-hint span::before{content:"▲ 收起原文"}
 .original-wrap:not(.expanded) .collapse-hint span::before{content:"▼ 展开原文"}
 
@@ -486,6 +488,24 @@ function scheduleTranslate(text) {
 
 // ===== 原文展开/折叠 =====
 let origCollapsed = true;
+let userScrolledUp = false;
+
+originalEl.addEventListener('scroll', () => {
+  const nearBottom = originalEl.scrollHeight - originalEl.scrollTop - originalEl.clientHeight < 30;
+  userScrolledUp = !nearBottom;
+}, {passive: true});
+
+function setOriginalText(full) {
+  const keep = originalEl.scrollTop;
+  originalEl.textContent = full;
+  originalEl.scrollTop = userScrolledUp ? keep : originalEl.scrollHeight;
+}
+
+function scrollOrigToBottom() {
+  userScrolledUp = false;
+  originalEl.scrollTop = originalEl.scrollHeight;
+}
+
 function updateCollapseHint() {
   // 原文内容够长才显示折叠提示
   if (originalEl.classList.contains('placeholder')) { collapseHint.style.display = 'none'; return; }
@@ -496,11 +516,15 @@ collapseHint.addEventListener('click', (e) => {
   e.stopPropagation();
   origCollapsed = !origCollapsed;
   origWrap.classList.toggle('expanded', !origCollapsed);
+  scrollOrigToBottom();
 });
 originalEl.addEventListener('click', () => {
   if (originalEl.classList.contains('placeholder')) return;
-  origCollapsed = !origCollapsed;
-  origWrap.classList.toggle('expanded', !origCollapsed);
+  if (origCollapsed) {
+    origCollapsed = false;
+    origWrap.classList.add('expanded');
+    scrollOrigToBottom();
+  }
 });
 
 // 隐藏原文切换
@@ -641,7 +665,7 @@ function initRecognition() {
     // ===== 关键：interim 变化也立刻翻 =====
     const full = (finalBuffer + (interim ? ' ' + interim : '')).trim();
     if (full) {
-      originalEl.textContent = full;
+      setOriginalText(full);
       updateCollapseHint();
       scheduleTranslate(full);  // final 和 interim 都翻！
     }
@@ -699,17 +723,21 @@ function handleBtnClick() {
         doTranslate(saved).then(t => addRecord(saved, t, currentLang));
       }
       finalBuffer = '';
-      originalEl.textContent = '（原文）';
-      originalEl.classList.add('placeholder');
-      translatedEl.textContent = '译文将在这里出现';
-      translatedEl.classList.add('empty');
-      translatedEl.classList.remove('error');
-      collapseHint.style.display = 'none';
-      origCollapsed = true; origWrap.classList.remove('expanded');
+      // 停止后保留原文和译文，方便回看
       micBtn.dataset.stop = '';
     }, 600);
   } else {
+    // 新一轮：清空显示
     finalBuffer = '';
+    originalEl.textContent = '（原文）';
+    originalEl.classList.add('placeholder');
+    translatedEl.textContent = '译文将在这里出现';
+    translatedEl.classList.add('empty');
+    translatedEl.classList.remove('error');
+    collapseHint.style.display = 'none';
+    origCollapsed = true;
+    origWrap.classList.remove('expanded');
+    userScrolledUp = false;
     try {
       recognition.start();
     } catch(e) {
