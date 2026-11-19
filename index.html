@@ -31,6 +31,19 @@ body{padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom)}
 
 /* ===== 字幕区 ===== */
 .subtitle-area{flex:1;display:flex;flex-direction:column;gap:6px;padding:4px 0;min-height:0}
+.lines{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;min-height:0;display:flex;flex-direction:column;gap:8px;padding:2px 0}
+.line-item{padding:10px 13px;border-radius:12px;background:rgba(255,255,255,.72);border:1px solid rgba(0,0,0,.04)}
+.line-item.live{background:#fff;border-color:rgba(99,102,241,.3);box-shadow:0 2px 12px rgba(99,102,241,.1)}
+.line-item.live.empty-live{display:none}
+.ln-trans{font-size:21px;font-weight:600;line-height:1.5;color:#1a1a2e;word-break:break-word}
+.line-item.live .ln-trans{color:#111}
+.ln-trans.empty{color:#ccc;font-weight:400;font-size:15px}
+.ln-trans.pending{color:#bbb;font-weight:400;font-size:14px}
+.ln-orig{font-size:12.5px;color:#a0a0a0;line-height:1.45;margin-top:5px;word-break:break-word}
+.ln-orig:empty{display:none}
+body.hide-orig .ln-orig{display:none}
+.lines::-webkit-scrollbar{width:3px}
+.lines::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:2px}
 
 /* 译文：主力，占最大空间 */
 .translated{flex:1;min-height:0;text-align:left;color:#1a1a2e;font-size:22px;font-weight:600;line-height:1.55;padding:14px 18px;background:#fff;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.05);overflow-y:auto;word-break:break-all}
@@ -187,11 +200,12 @@ body.hide-original .translated{flex:1}
   </div>
 
   <div class="subtitle-area">
-    <div class="original-wrap" id="origWrap">
-      <div class="original placeholder" id="original">（原文）</div>
-      <div class="collapse-hint" id="collapseHint" style="display:none"><span></span></div>
+    <div class="lines" id="lines">
+      <div class="line-item live" id="liveItem">
+        <div class="ln-trans empty" id="liveTrans">译文将在这里出现</div>
+        <div class="ln-orig" id="liveOrig"></div>
+      </div>
     </div>
-    <div class="translated empty" id="translated">译文将在这里出现</div>
   </div>
 
   <div class="controls">
@@ -295,7 +309,6 @@ const LANGS = {
 };
 const MAX_QUERY = 480;
 let currentLang = 'english';
-let finalBuffer = '';
 let langPanelOpen = false;
 
 const STORAGE_KEY = 'subtitle_records_v1';
@@ -324,9 +337,10 @@ function updateBadge() {
 }
 
 // ===== UI =====
-const originalEl = document.getElementById('original');
-const origWrap = document.getElementById('origWrap');
-const translatedEl = document.getElementById('translated');
+const linesEl = document.getElementById('lines');
+const liveItem = document.getElementById('liveItem');
+const liveTransEl = document.getElementById('liveTrans');
+const liveOrigEl = document.getElementById('liveOrig');
 const micBtn = document.getElementById('micBtn');
 const statusDot = document.getElementById('statusDot');
 const langToggle = document.getElementById('langToggle');
@@ -339,7 +353,6 @@ const recordsList = document.getElementById('recordsList');
 const historyTotal = document.getElementById('historyTotal');
 const clearAllBtn = document.getElementById('clearAllBtn');
 const exportBtn = document.getElementById('exportBtn');
-const collapseHint = document.getElementById('collapseHint');
 const lpHint = document.getElementById('lpHint');
 
 function setStatus(on) { statusDot.classList.toggle('on', !!on); }
@@ -489,31 +502,16 @@ async function runTranslate() {
   pendingText = null;
   translating = true;
 
-  // 还没有译文时给个状态提示
-  if (!translatedEl.textContent || translatedEl.classList.contains('empty') || translatedEl.classList.contains('error')) {
-    translatedEl.classList.remove('error');
-    translatedEl.classList.add('empty');
-    translatedEl.textContent = '翻译中...';
-  }
-
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), 6000);
   try {
     const result = await doTranslate(text, ctrl.signal);
-    if (result) {
-      translatedEl.classList.remove('empty', 'error');
-      translatedEl.textContent = result;
-    } else if (translatedEl.textContent === '翻译中...') {
-      translatedEl.classList.remove('empty');
-      translatedEl.classList.add('error');
-      translatedEl.textContent = '翻译暂时失败，稍后自动重试';
+    // 只显示仍是最新那句的结果
+    if (result && text === liveText) {
+      liveTransEl.classList.remove('empty', 'error');
+      liveTransEl.textContent = result;
     }
   } catch(e) {
-    if (translatedEl.textContent === '翻译中...') {
-      translatedEl.classList.remove('empty');
-      translatedEl.classList.add('error');
-      translatedEl.textContent = '翻译暂时失败，稍后自动重试';
-    }
   } finally {
     clearTimeout(timer);
     translating = false;
@@ -522,49 +520,78 @@ async function runTranslate() {
 }
 
 // ===== 原文展开/折叠 =====
-let origCollapsed = true;
-let userScrolledUp = false;
+// ===== 逐句显示：最新句在顶部，定稿句子依次往下 =====
+let liveText = '';          // 当前正在说的句子（未定稿）
+let committedSents = [];    // 已定稿句子原文
+let allFinals = '';         // 所有 final 文本（保存记录用）
+const commitQueue = [];
+let commitRunning = false;
 
-originalEl.addEventListener('scroll', () => {
-  const nearBottom = originalEl.scrollHeight - originalEl.scrollTop - originalEl.clientHeight < 30;
-  userScrolledUp = !nearBottom;
-}, {passive: true});
-
-function setOriginalText(full) {
-  const keep = originalEl.scrollTop;
-  originalEl.textContent = full;
-  originalEl.scrollTop = userScrolledUp ? keep : originalEl.scrollHeight;
-}
-
-function scrollOrigToBottom() {
-  userScrolledUp = false;
-  originalEl.scrollTop = originalEl.scrollHeight;
-}
-
-function updateCollapseHint() {
-  // 原文内容够长才显示折叠提示
-  if (originalEl.classList.contains('placeholder')) { collapseHint.style.display = 'none'; return; }
-  const fullH = originalEl.scrollHeight;
-  if (fullH > 50) { collapseHint.style.display = ''; } else { collapseHint.style.display = 'none'; }
-}
-collapseHint.addEventListener('click', (e) => {
-  e.stopPropagation();
-  origCollapsed = !origCollapsed;
-  origWrap.classList.toggle('expanded', !origCollapsed);
-  scrollOrigToBottom();
-});
-originalEl.addEventListener('click', () => {
-  if (originalEl.classList.contains('placeholder')) return;
-  if (origCollapsed) {
-    origCollapsed = false;
-    origWrap.classList.add('expanded');
-    scrollOrigToBottom();
+function splitSentences(text) {
+  const done = [];
+  const re = /[^.!?。！？]+[.!?。！？]+/g;
+  let m, last = 0;
+  while ((m = re.exec(text)) !== null) {
+    const s = m[0].trim();
+    if (s) done.push(s);
+    last = re.lastIndex;
   }
-});
+  return { done, rest: text.slice(last).trim() };
+}
+
+function renderLive() {
+  liveOrigEl.textContent = liveText;
+  if (!liveText) {
+    // 没有正在说的句子：已有定稿就隐藏当前卡片，否则显示占位提示
+    liveItem.classList.toggle('empty-live', committedSents.length > 0);
+    if (!committedSents.length) {
+      liveTransEl.classList.add('empty');
+      liveTransEl.classList.remove('error');
+      liveTransEl.textContent = '译文将在这里出现';
+    }
+    return;
+  }
+  liveItem.classList.remove('empty-live');
+  scheduleTranslate(liveText);
+}
+
+function resetTranscript() {
+  allFinals = '';
+  committedSents = [];
+  liveText = '';
+  pendingText = null;
+  lastTextHash = '';
+  commitQueue.length = 0;
+  linesEl.querySelectorAll('.line-item:not(.live)').forEach(n => n.remove());
+  renderLive();
+}
+
+async function pumpCommit() {
+  if (commitRunning) return;
+  commitRunning = true;
+  while (commitQueue.length) {
+    const { text, el } = commitQueue.shift();
+    const t = await doTranslate(text);
+    const cell = el.querySelector('.ln-trans');
+    cell.classList.remove('pending');
+    cell.textContent = t || '（翻译失败）';
+  }
+  commitRunning = false;
+}
+
+function commitSentence(s) {
+  const el = document.createElement('div');
+  el.className = 'line-item';
+  el.innerHTML = `<div class="ln-trans pending">翻译中…</div><div class="ln-orig"></div>`;
+  el.querySelector('.ln-orig').textContent = s;
+  liveItem.after(el);   // 最新的定稿紧挨在 live 下方 → 整体最新在上
+  commitQueue.push({ text: s, el });
+  pumpCommit();
+}
 
 // 隐藏原文切换
 hideOrigToggle.addEventListener('click', () => {
-  document.body.classList.toggle('hide-original');
+  document.body.classList.toggle('hide-orig');
 });
 
 // ===== 语言面板 =====
@@ -579,12 +606,7 @@ document.querySelectorAll('.lang-chip').forEach(chip => {
     chip.classList.add('active');
     currentLang = chip.dataset.lang;
     if (recognition) recognition.lang = LANGS[currentLang].speech;
-    finalBuffer = '';
-    originalEl.textContent = '（原文）';
-    originalEl.classList.add('placeholder');
-    translatedEl.textContent = '译文将在这里出现';
-    translatedEl.classList.add('empty');
-    translatedEl.classList.remove('error');
+    resetTranscript();
   });
 });
 
@@ -655,7 +677,6 @@ function initRecognition() {
     fatalError = false;
     micBtn.classList.add('recording');
     setStatus(true);
-    originalEl.classList.remove('placeholder');
     startVolumeMeter();
   };
   recognition.onend = () => {
@@ -688,22 +709,18 @@ function initRecognition() {
       if (r.isFinal) finals += r[0].transcript;
       else interim += r[0].transcript;
     }
-    if (finals) {
-      finalBuffer += (finalBuffer ? ' ' : '') + finals.trim();
-      // 滑窗：头部长了就切老的存历史
-      if (finalBuffer.length > MAX_QUERY) {
-        const old = finalBuffer.slice(0, MAX_QUERY * 0.7);
-        finalBuffer = finalBuffer.slice(old.length);
-        doTranslate(old).then(t => addRecord(old, t, currentLang));
+    if (finals.trim()) {
+      allFinals += (allFinals ? ' ' : '') + finals.trim();
+      // final 到达 = 这句话说完了，立即定稿成一行（含多个句号则拆开）
+      const { done, rest } = splitSentences(finals.trim());
+      const parts = done.length ? (rest ? done.concat([rest]) : done) : [finals.trim()];
+      for (const s of parts) {
+        if (s) { committedSents.push(s); commitSentence(s); }
       }
     }
-    // ===== 关键：interim 变化也立刻翻 =====
-    const full = (finalBuffer + (interim ? ' ' + interim : '')).trim();
-    if (full) {
-      setOriginalText(full);
-      updateCollapseHint();
-      scheduleTranslate(full);  // final 和 interim 都翻！
-    }
+    // interim = 正在说的这一句，实时显示在最顶部
+    liveText = interim.trim();
+    renderLive();
   };
 }
 
@@ -753,26 +770,23 @@ function handleBtnClick() {
     micBtn.dataset.stop = '1';
     recognition.stop();
     setTimeout(() => {
-      if (finalBuffer) {
-        const saved = finalBuffer;
-        doTranslate(saved).then(t => addRecord(saved, t, currentLang));
+      // 把最后未定稿的一句也定稿显示
+      if (liveText) {
+        committedSents.push(liveText);
+        commitSentence(liveText);
+        liveText = '';
       }
-      finalBuffer = '';
-      // 停止后保留原文和译文，方便回看
+      const saved = allFinals.trim();
+      if (saved) {
+        const joined = committedSents.join(' ');
+        doTranslate(joined || saved).then(t => addRecord(joined || saved, t, currentLang));
+      }
+      renderLive();
       micBtn.dataset.stop = '';
     }, 600);
   } else {
     // 新一轮：清空显示
-    finalBuffer = '';
-    originalEl.textContent = '（原文）';
-    originalEl.classList.add('placeholder');
-    translatedEl.textContent = '译文将在这里出现';
-    translatedEl.classList.add('empty');
-    translatedEl.classList.remove('error');
-    collapseHint.style.display = 'none';
-    origCollapsed = true;
-    origWrap.classList.remove('expanded');
-    userScrolledUp = false;
+    resetTranscript();
     try {
       recognition.start();
     } catch(e) {
