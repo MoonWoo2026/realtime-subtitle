@@ -209,6 +209,7 @@ body.hide-original .translated{flex:1}
     <button class="lang-chip" data-lang="bangladesh">孟加拉</button>
     <button class="lang-chip" data-lang="korea">韩国</button>
     <button class="lang-chip active" data-lang="english">英语</button>
+    <button class="lang-chip" data-lang="multi" title="英/韩/阿等混合自动识别">混合模式</button>
   </div>
 
   <div class="subtitle-area">
@@ -318,6 +319,7 @@ const LANGS = {
   bangladesh:  { speech: 'bn-BD',  mm: 'bn' },
   korea:       { speech: 'ko-KR',  mm: 'ko' },
   english:     { speech: 'en-US',  mm: 'en' },
+  multi:       { speech: '',       mm: 'auto' },
 };
 const MAX_QUERY = 480;
 let currentLang = 'english';
@@ -447,6 +449,7 @@ const LANG_CODE = {
   bangladesh:  'bn',
   korea:       'ko',
   english:     'en',
+  multi:       'auto',
 };
 
 async function doTranslate(text, signal) {
@@ -688,10 +691,20 @@ langToggle.addEventListener('click', () => {
 });
 document.querySelectorAll('.lang-chip').forEach(chip => {
   chip.addEventListener('click', () => {
+    const next = chip.dataset.lang;
+    // 切换前先停掉当前识别
+    if (micBtn.classList.contains('recording')) {
+      if (currentLang === 'multi') stopDeepgram();
+      else if (recognition) recognition.stop();
+      micBtn.classList.remove('recording');
+      setStatus(false);
+    }
     document.querySelectorAll('.lang-chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
-    currentLang = chip.dataset.lang;
-    if (recognition) recognition.lang = LANGS[currentLang].speech;
+    currentLang = next;
+    if (currentLang !== 'multi' && recognition) {
+      recognition.lang = LANGS[currentLang].speech;
+    }
     resetTranscript();
   });
 });
@@ -872,7 +885,118 @@ micBtn.addEventListener('mouseup', () => {
 });
 micBtn.addEventListener('mouseleave', () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
 
+// ===== 混合模式：Deepgram 实时多语言识别 =====
+let dgWs = null, dgCtx = null, dgStream = null, dgProcessor = null, dgActive = false;
+
+function getDgKey() { return localStorage.getItem('dg_key_v1') || ''; }
+
+function stopDeepgram() {
+  dgActive = false;
+  try { if (dgWs && dgWs.readyState === 1) dgWs.send(JSON.stringify({type:'CloseStream'})); } catch(e) {}
+  try { if (dgWs) dgWs.close(); } catch(e) {}
+  try { if (dgProcessor) dgProcessor.disconnect(); } catch(e) {}
+  try { if (dgStream) dgStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+  try { if (dgCtx) dgCtx.close(); } catch(e) {}
+  dgWs = dgCtx = dgStream = dgProcessor = null;
+  stopVolumeMeter();
+}
+
+function onDeepgramMessage(raw) {
+  let msg;
+  try { msg = JSON.parse(raw.data); } catch(e) { return; }
+  if (msg.type !== 'Results') return;
+  const alt = msg.channel && msg.channel.alternatives && msg.channel.alternatives[0];
+  let text = ((alt && alt.transcript) || '').trim();
+  if (!text) return;
+  if (msg.is_final) {
+    committedSents.push(text);
+    commitSentence(text);
+    liveText = '';
+    renderLive();
+  } else {
+    // interim：直接显示在最顶部
+    liveText = text;
+    renderLive();
+  }
+}
+
+async function startDeepgram() {
+  let key = getDgKey();
+  if (!key) {
+    key = (prompt('输入 Deepgram API Key\n\n免费注册：console.deepgram.com\n创建 API Key 后粘贴到这里（只存在你手机本地）') || '').trim();
+    if (!key) throw new Error('未填写 API Key');
+    localStorage.setItem('dg_key_v1', key);
+  }
+
+  dgStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+  dgCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (dgCtx.state === 'suspended') await dgCtx.resume();
+
+  const sr = Math.round(dgCtx.sampleRate);
+  const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=multi&smart_format=true'
+    + '&interim_results=true&encoding=linear16&channels=1&sample_rate=' + sr
+    + '&endpointing=300&utterance_end_ms=1000';
+
+  dgWs = new WebSocket(url, ['token', key]);
+  dgWs.binaryType = 'arraybuffer';
+
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('连接超时，检查网络或 Key')), 8000);
+    dgWs.onopen = () => { clearTimeout(t); dgActive = true; resolve(); };
+    dgWs.onerror = () => { clearTimeout(t); reject(new Error('连接失败，Key 可能无效')); };
+  }).catch(err => { stopDeepgram(); throw err; });
+
+  dgWs.onmessage = onDeepgramMessage;
+  dgWs.onclose = () => {
+    if (dgActive) {
+      stopDeepgram();
+      micBtn.classList.remove('recording');
+      setStatus(false);
+    }
+  };
+
+  const src = dgCtx.createMediaStreamSource(dgStream);
+  dgProcessor = dgCtx.createScriptProcessor(4096, 1, 1);
+  dgProcessor.onaudioprocess = (ev) => {
+    if (!dgWs || dgWs.readyState !== 1) return;
+    const f32 = ev.inputBuffer.getChannelData(0);
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    dgWs.send(i16.buffer);
+  };
+  src.connect(dgProcessor);
+  dgProcessor.connect(dgCtx.destination);
+}
+
 function handleBtnClick() {
+  // 混合模式：走 Deepgram 多语言识别
+  if (currentLang === 'multi') {
+    if (micBtn.classList.contains('recording')) {
+      stopDeepgram();
+      if (liveText) {
+        committedSents.push(liveText);
+        commitSentence(liveText);
+        liveText = '';
+      }
+      const saved = committedSents.join(' ').trim();
+      if (saved) doTranslate(saved).then(t => addRecord(saved, t, currentLang));
+      renderLive();
+      micBtn.classList.remove('recording');
+      setStatus(false);
+    } else {
+      resetTranscript();
+      startDeepgram().then(() => {
+        micBtn.classList.add('recording');
+        setStatus(true);
+      }).catch(err => alert('混合模式启动失败：' + err.message));
+    }
+    return;
+  }
   if (!recognition) { alert('当前浏览器不支持语音识别，请用 iOS Safari 或 Android Chrome 打开'); return; }
   if (micBtn.classList.contains('recording')) {
     micBtn.dataset.stop = '1';
