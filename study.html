@@ -29,6 +29,10 @@ body{padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom)}
 .rec-name{font-size:14.5px;font-weight:600;color:#333;margin-bottom:6px;line-height:1.4;padding-right:26px}
 .rec-preview{font-size:13px;color:#8a8a8a;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:8px}
 .rec-meta{display:flex;gap:8px;align-items:center;font-size:11px;color:#b0b0b0}
+.chip.cn-chip{flex-direction:column;align-items:flex-start;gap:2px;padding:6px 10px;line-height:1.3}
+.chip.cn-chip b{font-weight:600}
+.chip .cn{font-size:11px;color:#8a8a8a;font-weight:400}
+.chip.loading{opacity:.55}
 .rec-tag{padding:1px 7px;border-radius:6px;background:rgba(99,102,241,.08);color:#6366f1;font-weight:500}
 .rec-card{position:relative}
 .rec-remove{position:absolute;top:9px;right:9px;width:22px;height:22px;border-radius:50%;border:none;background:rgba(0,0,0,.04);color:#bbb;font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
@@ -153,6 +157,14 @@ body{padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom)}
             慢速
           </button>
         </div>
+      </div>
+
+      <div class="block" id="collocBlock" style="display:none">
+        <div class="block-title">
+          <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          习惯搭配
+        </div>
+        <div class="chip-wrap" id="collocWrap"></div>
       </div>
 
       <div class="block" id="wordBlock">
@@ -474,6 +486,7 @@ function renderSentence() {
   zhEl.classList.toggle('empty', !currentRecord.translated);
   zhEl.style.display = showTrans ? '' : 'none';
 
+  renderCollocations(s, langKey);
   renderWords(s, langKey);
 
   document.getElementById('prevSent').disabled = sentIdx === 0;
@@ -505,6 +518,135 @@ function renderClickableSentence(s, langKey) {
     }
     return esc(t);
   }).join('');
+}
+
+// ===== 习惯搭配（精选真实短语库，命中才显示）=====
+const COLLOCATIONS = [
+  'look for','look at','look after','look into','look up','look forward to','look down on','look up to',
+  'take care of','take off','take on','take up','take over','take part in','take place','take a break','take a look','take a walk','take a shower','take a nap','take notes','take responsibility','take a risk','take turns','take away','take out','take in',
+  'get up','get on','get off','get along','get over','get rid of','get ready','get dressed','get lost','get married','get tired','get in touch','get together','get back','get through',
+  'give up','give in','give away','give back','give a hand','give an example','give a lecture','give permission',
+  'put on','put off','put up with','put away','put down','put together','put forward',
+  'turn on','turn off','turn up','turn down','turn out','turn around','turn into',
+  'come up with','come across','come back','come true','come along','come over','come in',
+  'go on','go out','go over','go through','go shopping','go swimming','go crazy','go wrong','go ahead','go back','go away',
+  'run out of','run into','run away','run after',
+  'find out','figure out','work out','point out','carry out','carry on','bring up','bring back','break down','break up','break into','break a habit','set up','set off','set out','show up','show off','pick up','drop off','drop out','call off','call back','check out','check in','wake up','hurry up','shut up','calm down','slow down','speed up','grow up','clean up','throw away','try on','try out','wear out','blow up','cut off','cut down','deal with','end up','hang out','hang up','hold on','hold up','keep up','keep on','keep in touch','keep a promise','break a promise','keep calm','keep quiet',
+  'focus on','rely on','depend on','insist on','believe in','belong to','refer to','lead to','result in','result from','consist of','apply for','ask for','wait for','care about','think about','talk about','worry about','hear about','learn about','know about','agree with','agree on','argue about','complain about','apologize for','prepare for','search for','hope for','wish for','aim at','arrive at','arrive in','laugh at','point at','shout at','stare at','glance at','succeed in','invest in','participate in','engage in','specialize in',
+  'make a decision','make a mistake','make money','make progress','make an effort','make friends','make sense','make sure','make up','make out','make a difference','make a living','make a call','make a list',
+  'do homework','do housework','do business','do research','do damage','do a favor','do the dishes',
+  'have fun','have a look','have a drink','have a chat','have a try','have a good time','have a seat','have a rest','have a conversation',
+  'pay attention','pay a visit','pay the bill','pay back','pay off',
+  'catch a cold','catch a bus','catch fire','catch up',
+  'feel free','feel like','fall asleep','fall in love','be aware of','be afraid of','be proud of','be interested in','be good at','be crazy about','be tired of','be fond of','be used to','be responsible for','be similar to','be different from',
+  'a lot of','a little','a few','as well as','as soon as','as long as','in front of','in order to','in fact','in general','in particular','in addition','in advance','in charge of','in common','in danger','in trouble','on time','on purpose','on average','on sale','on the way','at least','at most','at first','at last','at once','by the way','by chance','for example','for instance','so far','once again','right now','all the time','from time to time','more or less','kind of','sort of','no longer','as usual','in the end','at the same time'
+];
+
+const NON_VERB_FIRST = new Set(['a','an','in','on','at','by','for','as','so','right','kind','more','no','from','once','all','the','of']);
+const IRREG_VERB = {
+  have:['has','had','having'], do:['does','did','done','doing'], go:['goes','went','gone','going'],
+  make:['makes','made','making'], take:['takes','took','taken','taking'], get:['gets','got','gotten','getting'],
+  give:['gives','gave','given','giving'], come:['comes','came','coming'], run:['runs','ran','running'],
+  put:['puts','putting'], find:['finds','found','finding'], feel:['feels','felt','feeling'],
+  keep:['keeps','kept','keeping'], hold:['holds','held','holding'], break:['breaks','broke','broken','breaking'],
+  pay:['pays','paid','paying'], catch:['catches','caught','catching'], think:['thinks','thought','thinking'],
+  bring:['brings','brought','bringing'], buy:['buys','bought','buying'], lead:['leads','led','leading'],
+  set:['sets','setting'], cut:['cuts','cutting'], fall:['falls','fell','fallen','falling'],
+  wear:['wears','wore','worn','wearing'], throw:['throws','threw','thrown','throwing'],
+  grow:['grows','grew','grown','growing'], know:['knows','knew','known','knowing'], see:['sees','saw','seen','seeing']
+};
+
+function firstWordForms(w) {
+  if (NON_VERB_FIRST.has(w)) return w;
+  const forms = new Set([w, w + 's', w + 'es', w + 'ed', w + 'd', w + 'ing']);
+  if (IRREG_VERB[w]) IRREG_VERB[w].forEach(f => forms.add(f));
+  if (/[^aeiou][aeiou][bdgklmnprt]$/.test(w)) {
+    const d = w + w.slice(-1);
+    forms.add(d + 'ing');
+    forms.add(d + 'ed');
+  }
+  if (w.endsWith('e')) forms.add(w.slice(0, -1) + 'ing');
+  return '(?:' + [...forms].join('|') + ')';
+}
+
+function collocPattern(p) {
+  const parts = p.split(' ');
+  if (p.startsWith('be ')) {
+    const beForms = '(?:be|am|is|are|was|were|been|being|i[\'’]m|you[\'’]re|he[\'’]s|she[\'’]s|it[\'’]s|we[\'’]re|they[\'’]re|that[\'’]s)';
+    return new RegExp('\\b' + beForms + '\\s+' + parts.slice(1).join('\\s+') + '\\b');
+  }
+  const first = firstWordForms(parts[0]);
+  return new RegExp('\\b' + first + (parts.length > 1 ? '\\s+' + parts.slice(1).join('\\s+') : '') + '\\b');
+}
+
+const COLLOC_RE = COLLOCATIONS.map(p => ({ p, re: collocPattern(p) }));
+
+function extractCollocations(sentence) {
+  const low = sentence.toLowerCase().replace(/[^a-z'’\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const hits = [];
+  for (const { p, re } of COLLOC_RE) {
+    if (re.test(low)) hits.push(p);
+  }
+  // 长短语优先，去掉被包含的短短语
+  hits.sort((a, b) => b.length - a.length);
+  const out = [];
+  for (const h of hits) {
+    if (!out.some(o => o.includes(h))) out.push(h);
+  }
+  return out.slice(0, 8);
+}
+
+async function translatePhrase(p) {
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem('phrase_cn_v1') || '{}'); } catch(e) {}
+  if (cache[p]) return cache[p];
+  let t = '';
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(p)}`;
+    const r = await fetch(url, {cache:'no-store'});
+    if (r.ok) {
+      const d = await r.json();
+      t = (d && d[0] ? d[0].map(x => x[0]).join('') : '') || '';
+    }
+  } catch(e) {}
+  if (!t) {
+    try {
+      const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(p)}&langpair=en|zh-CN`, {cache:'no-store'});
+      const d = await r.json();
+      const tt = (d && d.responseData && d.responseData.translatedText) || '';
+      if (tt && !/quota|LIMIT/i.test(tt)) t = tt;
+    } catch(e) {}
+  }
+  if (t) {
+    cache[p] = t;
+    try { localStorage.setItem('phrase_cn_v1', JSON.stringify(cache)); } catch(e) {}
+  }
+  return t;
+}
+
+function renderCollocations(sentence, langKey) {
+  const block = document.getElementById('collocBlock');
+  const wrap = document.getElementById('collocWrap');
+  if (langKey !== 'english') { block.style.display = 'none'; return; }
+  const list = extractCollocations(sentence);
+  if (!list.length) { block.style.display = 'none'; return; }
+  block.style.display = '';
+  wrap.innerHTML = list.map(p => `<span class="chip colloc" data-p="${escAttr(p)}">${esc(p)}</span>`).join('');
+  wrap.querySelectorAll('.colloc').forEach(c => {
+    c.addEventListener('click', async () => {
+      const p = c.dataset.p;
+      speak(p, 'en-US');
+      if (c.dataset.cn) return;
+      c.classList.add('loading');
+      const cn = await translatePhrase(p);
+      c.classList.remove('loading');
+      if (cn) {
+        c.dataset.cn = '1';
+        c.innerHTML = `<b>${esc(p)}</b><span class="cn">${esc(cn)}</span>`;
+        c.classList.add('cn-chip');
+      }
+    });
+  });
 }
 
 // ===== 本句词汇 =====
