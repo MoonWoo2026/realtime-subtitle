@@ -513,8 +513,8 @@ async function runTranslate() {
   const timer = setTimeout(() => ctrl.abort(), 6000);
   try {
     const result = await doTranslate(text, ctrl.signal);
-    // 只显示仍是最新那句的结果
-    if (result && text === liveText) {
+    // 结果对应的是当前句（或当前句的前缀）就显示，避免快语速下永远被更新覆盖
+    if (result && (text === liveText || liveText.startsWith(text))) {
       liveTransEl.classList.remove('empty', 'error');
       liveTransEl.textContent = result;
     }
@@ -529,10 +529,70 @@ async function runTranslate() {
 // ===== 原文展开/折叠 =====
 // ===== 逐句显示：最新句在顶部，定稿句子依次往下 =====
 let liveText = '';          // 当前正在说的句子（未定稿）
+let committedPrefix = '';   // 当前 utterance 里已提前定稿的部分
+let interimSince = 0;       // 当前 utterance 开始时间
 let committedSents = [];    // 已定稿句子原文
 let allFinals = '';         // 所有 final 文本（保存记录用）
 const commitQueue = [];
-let commitRunning = false;
+let activeWorkers = 0;
+const COMMIT_WORKERS = 2;   // 定稿句并发翻译数，语速快时提高吞吐
+
+// 在稳定段找切点：优先标点，其次空格；尾部留 25 字符给识别器修正
+function findCut(t) {
+  const limit = Math.max(30, t.length - 25);
+  const seg = t.slice(0, limit);
+  const re = /[,.!?;:，。！？；：]\s*/g;
+  let last = -1, m;
+  while ((m = re.exec(seg)) !== null) last = m.index + m[0].length;
+  if (last > 20) return last;
+  const sp = seg.lastIndexOf(' ');
+  return sp > 25 ? sp : limit;
+}
+
+function normSpace(s) { return s.replace(/\s+/g, ' ').trim(); }
+
+// 避免切在介词/冠词/助动词后面，造成半句
+const WEAK_TAIL = new Set(['a','an','the','of','in','on','at','to','for','and','or','but','with','that','this','is','am','are','was','were','be','been','being','i','you','we','they','he','she','it','like','as','so','if','because','when','while','my','your','his','her','their','our','not','just','very','really','can','could','will','would','should','do','does','did']);
+
+function trimWeakTail(head) {
+  const w = head.split(/\s+/);
+  while (w.length > 4) {
+    const last = w[w.length - 1].toLowerCase().replace(/[^a-z'’]/g, '');
+    if (!WEAK_TAIL.has(last)) break;
+    w.pop();
+  }
+  return w.join(' ');
+}
+
+// 语速快时浏览器迟迟不给 final：主动把前半段定稿
+function forceSplitIfLong() {
+  const t = liveText.trim();
+  if (!t || t.length < 40) return;
+  const tooLong = t.length >= 80;
+  const tooSlow = interimSince && (Date.now() - interimSince > 6000);
+  if (!tooLong && !tooSlow) return;
+
+  let cut;
+  if (tooLong) {
+    cut = findCut(t);
+  } else {
+    const sp = t.lastIndexOf(' ');
+    cut = sp > 20 ? sp : 0;
+  }
+  if (cut <= 0) return;
+
+  const head = trimWeakTail(t.slice(0, cut).trim());
+  if (head.length < 20) return;
+  const tail = t.slice(head.length).trim();
+  if (!head) return;
+
+  committedSents.push(head);
+  commitSentence(head);
+  committedPrefix = normSpace(committedPrefix + ' ' + head);
+  liveText = tail;
+  interimSince = Date.now();
+  renderLive();
+}
 
 function splitSentences(text) {
   const done = [];
@@ -566,6 +626,8 @@ function resetTranscript() {
   allFinals = '';
   committedSents = [];
   liveText = '';
+  committedPrefix = '';
+  interimSince = 0;
   pendingText = null;
   lastTextHash = '';
   commitQueue.length = 0;
@@ -573,17 +635,20 @@ function resetTranscript() {
   renderLive();
 }
 
-async function pumpCommit() {
-  if (commitRunning) return;
-  commitRunning = true;
-  while (commitQueue.length) {
+function pumpCommit() {
+  while (activeWorkers < COMMIT_WORKERS && commitQueue.length) {
     const { text, el } = commitQueue.shift();
-    const t = await doTranslate(text);
-    const cell = el.querySelector('.ln-trans');
-    cell.classList.remove('pending');
-    cell.textContent = t || '（翻译失败）';
+    activeWorkers++;
+    (async () => {
+      let t = '';
+      try { t = await doTranslate(text); } catch(e) {}
+      const cell = el.querySelector('.ln-trans');
+      cell.classList.remove('pending');
+      cell.textContent = t || '（翻译失败）';
+      activeWorkers--;
+      pumpCommit();
+    })();
   }
-  commitRunning = false;
 }
 
 function commitSentence(s) {
@@ -717,6 +782,9 @@ function initRecognition() {
       else interim += r[0].transcript;
     }
     if (finals.trim()) {
+      // 本段识别结束：清空提前定稿的前缀记录
+      committedPrefix = '';
+      interimSince = 0;
       allFinals += (allFinals ? ' ' : '') + finals.trim();
       // final 到达 = 这句话说完了，立即定稿成一行（含多个句号则拆开）
       const { done, rest } = splitSentences(finals.trim());
@@ -724,10 +792,29 @@ function initRecognition() {
       for (const s of parts) {
         if (s) { committedSents.push(s); commitSentence(s); }
       }
+      liveText = '';
+      renderLive();
+      return;
     }
-    // interim = 正在说的这一句，实时显示在最顶部
-    liveText = interim.trim();
+
+    if (!interim) return;
+    if (!interimSince) interimSince = Date.now();
+
+    // 去掉本轮已经提前定稿的部分，避免重复显示
+    let live = normSpace(interim);
+    if (committedPrefix) {
+      const p = committedPrefix.toLowerCase();
+      if (live.toLowerCase().startsWith(p)) {
+        live = live.slice(committedPrefix.length).trim();
+      } else {
+        committedPrefix = '';  // 识别器改写了文本，重新计
+      }
+    }
+
+    liveText = live;
     renderLive();
+    // 语速快时浏览器长时间不给 final：主动切句，保证翻译不停
+    forceSplitIfLong();
   };
 }
 
