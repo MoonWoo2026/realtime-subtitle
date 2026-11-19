@@ -692,10 +692,13 @@ langToggle.addEventListener('click', () => {
 document.querySelectorAll('.lang-chip').forEach(chip => {
   chip.addEventListener('click', () => {
     const next = chip.dataset.lang;
+    if (next === currentLang) return;
+    // 标记切换中：阻止 onend 自动重启识别器（否则切到混合模式会抢麦克风，Deepgram 拿不到声音）
+    langSwitching = true;
     // 切换前先停掉当前识别
     if (micBtn.classList.contains('recording')) {
       if (currentLang === 'multi') stopDeepgram();
-      else if (recognition) recognition.stop();
+      else if (recognition) { try { recognition.stop(); } catch(e){} }
       micBtn.classList.remove('recording');
       setStatus(false);
     }
@@ -706,6 +709,8 @@ document.querySelectorAll('.lang-chip').forEach(chip => {
       recognition.lang = LANGS[currentLang].speech;
     }
     resetTranscript();
+    // 给 onend 留足执行时间，再解除切换锁
+    setTimeout(() => { langSwitching = false; }, 500);
   });
 });
 
@@ -764,6 +769,7 @@ function stopVolumeMeter() {
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let fatalError = false;
+let langSwitching = false;  // 语言切换中：阻止 onend 自动重启，避免抢麦
 
 function initRecognition() {
   if (!SpeechRecognition) { alert('请用 Chrome（Android）或 Safari（iOS）'); return; }
@@ -781,6 +787,7 @@ function initRecognition() {
   recognition.onend = () => {
     setStatus(false);
     stopVolumeMeter();
+    if (langSwitching) return;  // 语言切换中：绝不自动重启
     if (!micBtn.dataset.stop && !fatalError) {
       try { recognition.start(); } catch(e){}
     } else {
