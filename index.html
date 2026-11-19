@@ -357,13 +357,28 @@ function loadTrCache() { try { return JSON.parse(localStorage.getItem(TR_CACHE_K
 function saveTrCache() { try { localStorage.setItem(TR_CACHE_KEY, JSON.stringify(trCache)); } catch(e){} }
 function cacheKey(lang, text) { return lang + '|' + text.slice(0, 200).toLowerCase(); }
 
+// 带超时的 fetch，避免请求无限挂起
+async function fetchT(url, opts = {}, ms = 5000, signal = null) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener('abort', () => ctrl.abort(), {once: true});
+  }
+  try {
+    return await fetch(url, {...opts, signal: ctrl.signal});
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const TRANSLATE_BACKENDS = [
   {
     name: 'Google',
     // Google 网页版用的端点，无 key、浏览器 IP 不会被拦
-    translate: async (text, src, tgt) => {
+    translate: async (text, src, tgt, signal) => {
       const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${src}&tl=${tgt}&dt=t&q=${encodeURIComponent(text)}`;
-      const resp = await fetch(url, {cache:'no-store', referrer:'https://translate.google.com/'});
+      const resp = await fetchT(url, {cache:'no-store', referrer:'https://translate.google.com/'}, 4500, signal);
       if (!resp.ok) throw new Error('google ' + resp.status);
       const data = await resp.json();
       if (!data || !Array.isArray(data[0])) throw new Error('bad google resp');
@@ -372,9 +387,9 @@ const TRANSLATE_BACKENDS = [
   },
   {
     name: 'MyMemory',
-    translate: async (text, src, tgt) => {
+    translate: async (text, src, tgt, signal) => {
       const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`;
-      const resp = await fetch(url, {cache:'no-store'});
+      const resp = await fetchT(url, {cache:'no-store'}, 5000, signal);
       if (!resp.ok) throw new Error('mm ' + resp.status);
       const data = await resp.json();
       const t = data?.responseData?.translatedText || '';
@@ -384,24 +399,18 @@ const TRANSLATE_BACKENDS = [
     }
   },
   {
-    name: 'Argos',
-    translate: async (text, src, tgt) => {
-      const instances = [
-        'https://translate.argosopentech.com/translate',
-      ];
-      for (const inst of instances) {
+    name: 'Lingva',
+    translate: async (text, src, tgt, signal) => {
+      const hosts = ['https://lingva.ml', 'https://lingva.garudalinux.org'];
+      for (const h of hosts) {
         try {
-          const resp = await fetch(inst, {
-            method:'POST',
-            headers:{'Content-Type':'application/json','Origin':inst},
-            body: JSON.stringify({q:text, source:src, target:tgt, format:'text'})
-          });
+          const resp = await fetchT(`${h}/api/v1/${src}/${tgt}/${encodeURIComponent(text)}`, {cache:'no-store'}, 5000, signal);
           if (!resp.ok) continue;
           const data = await resp.json();
-          if (data?.translatedText) return data.translatedText;
+          if (data && data.translation) return data.translation;
         } catch(e) {}
       }
-      throw new Error('argos fail');
+      throw new Error('lingva fail');
     }
   },
 ];
@@ -414,7 +423,7 @@ const LANG_CODE = {
   english:     'en',
 };
 
-async function doTranslate(text) {
+async function doTranslate(text, signal) {
   if (!text || !text.trim()) return '';
 
   // 0. 查缓存（整段）
@@ -445,7 +454,7 @@ async function doTranslate(text) {
     for (let i = 0; i < TRANSLATE_BACKENDS.length && !done; i++) {
       const idx = (backendIndex + i) % TRANSLATE_BACKENDS.length;
       try {
-        const t = await TRANSLATE_BACKENDS[idx].translate(s, srcCode, 'zh-CN');
+        const t = await TRANSLATE_BACKENDS[idx].translate(s, srcCode, 'zh-CN', signal);
         if (t) {
           out.push(t);
           backendIndex = idx;
@@ -460,30 +469,56 @@ async function doTranslate(text) {
   if (result) { trCache[fullKey] = result; saveTrCache(); }
   return result;
 }
-// 快速节流 + token 机制：旧请求回来直接丢
+// 串行翻译：同时只跑一个请求，跑完立刻追最新文本，永不堆积
+let translating = false;
+let pendingText = null;
+
 function scheduleTranslate(text) {
   if (!text) return;
-  const token = ++translateToken;
-
   // 文本没变就不重复翻
   const hash = text.slice(-80);
-  if (hash === lastTextHash && translatedEl.textContent && !translatedEl.classList.contains('error')) return;
+  if (hash === lastTextHash) return;
   lastTextHash = hash;
+  pendingText = text;
+  if (!translating) runTranslate();
+}
 
-  if (scheduledTimer) clearTimeout(scheduledTimer);
-  scheduledTimer = setTimeout(async () => {
-    const myToken = token;
-    const result = await doTranslate(text);
-    // 旧结果 — 直接丢
-    if (myToken !== translateToken) return;
-    // 显示
+async function runTranslate() {
+  if (!pendingText) return;
+  const text = pendingText;
+  pendingText = null;
+  translating = true;
+
+  // 还没有译文时给个状态提示
+  if (!translatedEl.textContent || translatedEl.classList.contains('empty') || translatedEl.classList.contains('error')) {
+    translatedEl.classList.remove('error');
+    translatedEl.classList.add('empty');
+    translatedEl.textContent = '翻译中...';
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const result = await doTranslate(text, ctrl.signal);
     if (result) {
-      translatedEl.classList.remove('empty','error');
+      translatedEl.classList.remove('empty', 'error');
       translatedEl.textContent = result;
     } else if (translatedEl.textContent === '翻译中...') {
-      // 保持旧译文不动
+      translatedEl.classList.remove('empty');
+      translatedEl.classList.add('error');
+      translatedEl.textContent = '翻译暂时失败，稍后自动重试';
     }
-  }, 180);  // 180ms 节流，极快
+  } catch(e) {
+    if (translatedEl.textContent === '翻译中...') {
+      translatedEl.classList.remove('empty');
+      translatedEl.classList.add('error');
+      translatedEl.textContent = '翻译暂时失败，稍后自动重试';
+    }
+  } finally {
+    clearTimeout(timer);
+    translating = false;
+    if (pendingText) runTranslate();  // 有更新的文本，立刻追
+  }
 }
 
 // ===== 原文展开/折叠 =====
