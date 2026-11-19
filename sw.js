@@ -1,11 +1,17 @@
-const CACHE = 'subtitle-v1';
+const CACHE = 'subtitle-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('activate', e => e.waitUntil(
+  caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim())
+));
 
-// 网络优先：在线时始终拿最新页面，离线时回退到缓存
+// 只接管同源请求：翻译 API 等跨域请求直接交给浏览器，避免被 SW 干扰
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  if (url.origin !== self.location.origin) return;
+
   e.respondWith(
     fetch(e.request)
       .then(resp => {

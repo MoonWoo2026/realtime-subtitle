@@ -602,11 +602,14 @@ async function translatePhrase(p) {
   if (cache[p]) return cache[p];
   let t = '';
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(p)}`;
+    const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=zh-CN&q=${encodeURIComponent(p)}`;
     const r = await fetch(url, {cache:'no-store'});
     if (r.ok) {
       const d = await r.json();
-      t = (d && d[0] ? d[0].map(x => x[0]).join('') : '') || '';
+      if (Array.isArray(d)) {
+        if (typeof d[0] === 'string') t = d.join(' ');
+        else if (Array.isArray(d[0])) t = d[0][0] || '';
+      }
     }
   } catch(e) {}
   if (!t) {
