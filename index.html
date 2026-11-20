@@ -795,17 +795,30 @@ function initRecognition() {
     }
   };
   recognition.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+    console.warn('recognition error:', e.error);
+    // 非致命错误：自动重启即可，不弹 alert 打扰用户
+    if (e.error === 'aborted' || e.error === 'no-speech') return;
+    micBtn.classList.remove('recording');
+    setStatus(false);
+    let msg = '';
+    if (e.error === 'not-allowed') {
       fatalError = true;
-      micBtn.classList.remove('recording');
-      setStatus(false);
-      alert('请允许麦克风权限');
+      msg = '麦克风权限被禁用。请在 设置 → Safari → 麦克风 里允许，或删除本网站数据后重新授权。';
+    } else if (e.error === 'service-not-allowed') {
+      fatalError = true;
+      // iOS Safari 的 Web Speech API 走 Google 服务器，学校 Wi-Fi 常屏蔽
+      msg = '语音识别服务不可用（可能是当前网络屏蔽了 Google 服务）。试试：①换流量 ②切到「混合模式」（用 Deepgram）';
     } else if (e.error === 'audio-capture') {
       fatalError = true;
-      micBtn.classList.remove('recording');
-      setStatus(false);
-      alert('没有检测到麦克风');
+      msg = '没有检测到麦克风';
+    } else if (e.error === 'network') {
+      fatalError = true;
+      msg = '网络错误，语音识别需要联网';
+    } else {
+      fatalError = true;
+      msg = '语音识别错误：' + e.error;
     }
+    alert(msg);
   };
 
   recognition.onresult = (event) => {
